@@ -187,10 +187,21 @@ function truncate(str, length) {
   return str.length > length ? str.substring(0, length) + '...' : str;
 }
 
-function startInspect() {
-  // Request the content script to start inspect mode
-  chrome.runtime.sendMessage({ type: 'START_INSPECT' });
-  window.close();
+async function startInspect() {
+  try {
+    // Get the active tab
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tabs[0]) {
+      // Send message to content script
+      await chrome.tabs.sendMessage(tabs[0].id, { type: 'START_INSPECT' });
+      console.log('Sent START_INSPECT to tab:', tabs[0].id);
+    }
+  } catch (e) {
+    console.error('Failed to start inspect:', e);
+  }
+  
+  // Delay closing to ensure message is sent
+  setTimeout(() => window.close(), 100);
 }
 
 async function undoLast() {
