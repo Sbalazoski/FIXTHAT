@@ -192,16 +192,29 @@ async function startInspect() {
     // Get the active tab
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tabs[0]) {
-      // Send message to content script
+      // First inject the content script
+      await chrome.scripting.executeScript({
+        target: { tabId: tabs[0].id },
+        files: ['content.js']
+      });
+      
+      // Then send message to start inspect mode
       await chrome.tabs.sendMessage(tabs[0].id, { type: 'START_INSPECT' });
-      console.log('Sent START_INSPECT to tab:', tabs[0].id);
+      console.log('Started inspect mode on tab:', tabs[0].id);
     }
   } catch (e) {
     console.error('Failed to start inspect:', e);
+    // Try just sending message anyway
+    try {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      await chrome.tabs.sendMessage(tabs[0].id, { type: 'START_INSPECT' });
+    } catch (e2) {
+      console.error('Fallback also failed:', e2);
+    }
   }
   
   // Delay closing to ensure message is sent
-  setTimeout(() => window.close(), 100);
+  setTimeout(() => window.close(), 200);
 }
 
 async function undoLast() {
