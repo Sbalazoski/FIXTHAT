@@ -1,5 +1,21 @@
 // Background service worker for Element Inspector & Notepad
 
+// Handle keyboard shortcut
+chrome.commands.onCommand.addListener((command) => {
+  if (command === 'start-inspect') {
+    chrome.tabs.query({ active: true, currentWindow: true }).then(tabs => {
+      if (tabs[0]) {
+        chrome.tabs.sendMessage(tabs[0].id, { type: 'START_INSPECT' });
+      }
+    });
+  }
+});
+
+// Initialize badge on install
+chrome.runtime.onInstalled.addListener(() => {
+  updateBadge(0);
+});
+
 // Handle messages from content script and popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'STORE_ELEMENT') {
@@ -37,6 +53,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   
+  if (message.type === 'UNDO_LAST') {
+    undoLastElement().then(() => {
+      sendResponse({ success: true });
+    });
+    return true;
+  }
+  
+  if (message.type === 'UPDATE_BADGE') {
+    updateBadge(message.data.count);
+    return true;
+  }
+  
   if (message.type === 'START_INSPECT') {
     // Send message to content script to start inspect mode
     chrome.tabs.query({ active: true, currentWindow: true }).then(tabs => {
@@ -55,6 +83,7 @@ async function storeElement(element) {
   element.timestamp = Date.now();
   data.elements.push(element);
   await chrome.storage.local.set(data);
+  updateBadge(data.elements.length);
 }
 
 async function getElements() {
@@ -78,12 +107,33 @@ async function deleteElement(id) {
   const elements = data.elements || [];
   const filtered = elements.filter(el => el.id !== id);
   await chrome.storage.local.set({ elements: filtered });
+  updateBadge(filtered.length);
+}
+
+async function undoLastElement() {
+  const data = await chrome.storage.local.get({ elements: [] });
+  const elements = data.elements || [];
+  if (elements.length > 0) {
+    elements.pop();
+    await chrome.storage.local.set({ elements });
+    updateBadge(elements.length);
+  }
 }
 
 async function clearAllElements() {
   await chrome.storage.local.set({ elements: [] });
+  updateBadge(0);
 }
 
 function generateId() {
   return 'el_' + Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
+}
+
+function updateBadge(count) {
+  if (count > 0) {
+    chrome.action.setBadgeText({ text: String(count) });
+    chrome.action.setBadgeBackgroundColor({ color: '#2563EB' });
+  } else {
+    chrome.action.setBadgeText({ text: '' });
+  }
 }

@@ -8,6 +8,15 @@
     "activeTab",
     "scripting"
   ],
+  "commands": {
+    "start-inspect": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+I",
+        "mac": "Command+Shift+I"
+      },
+      "description": "Start Inspect Mode"
+    }
+  },
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

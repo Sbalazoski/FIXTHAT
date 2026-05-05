@@ -10,6 +10,7 @@ async function init() {
   
   // Set up event listeners
   document.getElementById('inspect-btn').addEventListener('click', startInspect);
+  document.getElementById('undo-btn').addEventListener('click', undoLast);
   document.getElementById('clear-btn').addEventListener('click', clearAll);
   document.getElementById('export-btn').addEventListener('click', exportElements);
   
@@ -29,6 +30,7 @@ async function loadElements() {
 function renderElements() {
   const listEl = document.getElementById('elements-list');
   const emptyState = document.getElementById('empty-state');
+  const undoBtn = document.getElementById('undo-btn');
   const clearBtn = document.getElementById('clear-btn');
   const exportBtn = document.getElementById('export-btn');
   
@@ -41,13 +43,16 @@ function renderElements() {
         <div class="empty-icon">⌘</div>
         <p>No elements captured yet</p>
         <p class="empty-hint">Click "Start Inspecting" to begin selecting elements on the page</p>
+        <p class="empty-hint">Or press <strong>Ctrl+Shift+I</strong></p>
       </div>
     `;
+    undoBtn.disabled = true;
     clearBtn.disabled = true;
     exportBtn.disabled = true;
     return;
   }
   
+  undoBtn.disabled = false;
   clearBtn.disabled = false;
   exportBtn.disabled = false;
   
@@ -62,6 +67,7 @@ function createElementCard(element, index) {
   const card = document.createElement('div');
   card.className = 'element-card';
   card.dataset.id = element.id;
+  card.dataset.index = index;
   
   // Build classes display
   const classesHtml = element.classes 
@@ -71,7 +77,7 @@ function createElementCard(element, index) {
   // Build attributes display
   let attrsHtml = '';
   if (element.attributes && Object.keys(element.attributes).length > 0) {
-    const keyAttrs = Object.entries(element.attributes).slice(0, 3);
+    const keyAttrs = Object.entries(element.attributes).slice(0, 4);
     attrsHtml = keyAttrs.map(([key, val]) => `
       <div class="element-detail-row">
         <span class="element-detail-label">${key}:</span>
@@ -86,9 +92,37 @@ function createElementCard(element, index) {
     sourceHtml = `
       <div class="element-detail-row">
         <span class="element-detail-label">Source:</span>
-        <span class="element-detail-value">${element.sourceLocation.url}:${element.sourceLocation.line}</span>
+        <span class="element-detail-value" title="${element.sourceLocation.url}:${element.sourceLocation.line}">${element.sourceLocation.url}:${element.sourceLocation.line}</span>
       </div>
     `;
+  }
+  
+  // Computed styles
+  let stylesHtml = '';
+  if (element.computedStyles && Object.keys(element.computedStyles).length > 0) {
+    const styleEntries = Object.entries(element.computedStyles).slice(0, 5);
+    stylesHtml = `
+      <div class="styles-section">
+        <div class="styles-label">Styles</div>
+        <div class="styles-grid">
+          ${styleEntries.map(([key, val]) => `
+            <span class="style-item">
+              <span class="style-key">${key}:</span>
+              <span class="style-val">${val}</span>
+            </span>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+  
+  // Warnings
+  let warningsHtml = '';
+  if (element.isInShadowDOM) {
+    warningsHtml += `<span class="warning-badge">Shadow DOM</span>`;
+  }
+  if (element.isInIframe) {
+    warningsHtml += `<span class="warning-badge">Iframe</span>`;
   }
   
   card.innerHTML = `
@@ -96,6 +130,7 @@ function createElementCard(element, index) {
       <div class="element-tag">
         <span class="element-tag-name">&lt;${element.tagName}&gt;</span>
         ${element.idAttr ? `<span class="element-id">#${element.idAttr}</span>` : ''}
+        ${warningsHtml ? `<div class="warnings">${warningsHtml}</div>` : ''}
       </div>
       <button class="element-delete" title="Delete" data-id="${element.id}">×</button>
     </div>
@@ -103,11 +138,13 @@ function createElementCard(element, index) {
     <div class="element-details">
       <div class="element-detail-row">
         <span class="element-detail-label">CSS:</span>
-        <span class="element-detail-value" title="${element.cssSelector}">${truncate(element.cssSelector, 50)}</span>
+        <span class="element-detail-value" title="${element.cssSelector}">${truncate(element.cssSelector, 40)}</span>
+        <button class="copy-btn" data-copy="${element.cssSelector}" title="Copy">📋</button>
       </div>
       <div class="element-detail-row">
         <span class="element-detail-label">XPath:</span>
-        <span class="element-detail-value" title="${element.xpath}">${truncate(element.xpath, 50)}</span>
+        <span class="element-detail-value" title="${element.xpath}">${truncate(element.xpath, 40)}</span>
+        <button class="copy-btn" data-copy="${element.xpath}" title="Copy">📋</button>
       </div>
       ${attrsHtml}
       ${sourceHtml}
@@ -118,6 +155,7 @@ function createElementCard(element, index) {
         </div>
       ` : ''}
     </div>
+    ${stylesHtml}
     <div class="notes-section">
       <div class="notes-label">Notes (your notes)</div>
       <textarea class="notes-textarea" placeholder="Add your notes here..." data-id="${element.id}">${element.notes || ''}</textarea>
@@ -127,6 +165,14 @@ function createElementCard(element, index) {
   // Add event listeners
   card.querySelector('.element-delete').addEventListener('click', (e) => {
     deleteElement(e.target.dataset.id);
+  });
+  
+  card.querySelectorAll('.copy-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const textToCopy = e.target.dataset.copy;
+      await navigator.clipboard.writeText(textToCopy);
+      showToast('Copied!');
+    });
   });
   
   card.querySelector('.notes-textarea').addEventListener('change', (e) => {
@@ -144,8 +190,17 @@ function truncate(str, length) {
 function startInspect() {
   // Request the content script to start inspect mode
   chrome.runtime.sendMessage({ type: 'START_INSPECT' });
-  
   window.close();
+}
+
+async function undoLast() {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: 'UNDO_LAST' }, async () => {
+      await loadElements();
+      renderElements();
+      resolve();
+    });
+  });
 }
 
 async function deleteElement(id) {
@@ -182,7 +237,8 @@ async function clearAll() {
 }
 
 async function exportElements() {
-  let exportText = '=== Element Inspector Export ===\n\n';
+  let exportText = '=== Element Inspector Export ===\n';
+  exportText += `Captured: ${elements.length} element(s)\n\n`;
   
   elements.forEach((el, index) => {
     exportText += `--- Element ${index + 1} ---\n`;
@@ -201,8 +257,22 @@ async function exportElements() {
       });
     }
     
+    if (el.computedStyles && Object.keys(el.computedStyles).length > 0) {
+      exportText += `Styles:\n`;
+      Object.entries(el.computedStyles).forEach(([key, val]) => {
+        exportText += `  ${key}: ${val}\n`;
+      });
+    }
+    
     if (el.sourceLocation) {
       exportText += `Source: ${el.sourceLocation.url}:${el.sourceLocation.line}\n`;
+    }
+    
+    if (el.isInShadowDOM) {
+      exportText += `Warning: Element is in Shadow DOM\n`;
+    }
+    if (el.isInIframe) {
+      exportText += `Warning: Element is in Iframe\n`;
     }
     
     if (el.textContent) {
@@ -221,7 +291,7 @@ async function exportElements() {
   // Copy to clipboard
   try {
     await navigator.clipboard.writeText(exportText);
-    showToast('Copied to clipboard!');
+    showToast(`Copied ${elements.length} element(s) to clipboard!`);
   } catch (err) {
     console.error('Failed to copy:', err);
   }

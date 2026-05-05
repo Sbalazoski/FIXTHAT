@@ -126,7 +126,10 @@ function extractElementInfo(element) {
     cssSelector: generateCSSSelector(element),
     xpath: generateXPath(element),
     textContent: element.textContent ? element.textContent.trim().substring(0, 100) : '',
-    sourceLocation: null
+    sourceLocation: null,
+    computedStyles: extractComputedStyles(element),
+    isInShadowDOM: isElementInShadowDOM(element),
+    isInIframe: isElementInIframe(element)
   };
   
   // Capture key attributes
@@ -160,6 +163,48 @@ function extractElementInfo(element) {
   }
   
   return info;
+}
+
+function extractComputedStyles(element) {
+  const styles = {};
+  try {
+    const computed = window.getComputedStyle(element);
+    if (!computed) return styles;
+    
+    // Key style properties to capture
+    const styleKeys = [
+      'color', 'backgroundColor', 'background', 'fontSize', 'fontFamily', 'fontWeight',
+      'display', 'position', 'visibility', 'opacity',
+      'marginTop', 'marginRight', 'marginBottom', 'marginLeft',
+      'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+      'width', 'height', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight',
+      'borderTop', 'borderRight', 'borderBottom', 'borderLeft',
+      'borderColor', 'borderWidth', 'borderRadius',
+      'boxShadow', 'textAlign', 'lineHeight', 'zIndex', 'overflow'
+    ];
+    
+    styleKeys.forEach(key => {
+      const value = computed.getPropertyValue(key);
+      if (value && value !== 'auto' && value !== 'none' && value !== '0px' && value !== 'normal') {
+        styles[key] = value;
+      }
+    });
+  } catch (e) {
+    // Styles not accessible
+  }
+  return styles;
+}
+
+function isElementInShadowDOM(element) {
+  return !!element.closest && !!element.getRootNode && element.getRootNode() !== document;
+}
+
+function isElementInIframe(element) {
+  try {
+    return window.location !== window.parent.location;
+  } catch (e) {
+    return true;
+  }
 }
 
 function generateCSSSelector(element) {
