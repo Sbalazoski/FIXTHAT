@@ -1,6 +1,7 @@
 // Element Inspector & Notepad - Popup Script
 
 let elements = [];
+let sessionElements = []; // Elements captured in this session
 
 // Initialize - call right away if DOM is ready, otherwise wait for DOMContentLoaded
 if (document.readyState === 'loading') {
@@ -10,7 +11,7 @@ if (document.readyState === 'loading') {
 }
 
 async function init() {
-  // Load existing elements
+  // Load existing elements from storage
   await loadElements();
   
   // Set up event listeners
@@ -26,9 +27,13 @@ async function init() {
   document.getElementById('presets-btn').addEventListener('click', showPresets);
   document.getElementById('stacking-btn').addEventListener('click', analyzeStacking);
   
-  // Render elements
+  // Render elements in the popup UI
   renderElements();
+  updateSessionPanel();
 }
+
+// Keep popup open - don't close on any action
+window.shouldClosePopup = false;
 
 async function loadElements() {
   return new Promise((resolve) => {
@@ -210,28 +215,76 @@ async function startInspect() {
         files: ['content.js']
       });
       
-      // Then send message to start inspect mode
+      // Send message to start inspect mode
       await chrome.tabs.sendMessage(tabs[0].id, { type: 'START_INSPECT' });
-      console.log('Started inspect mode on tab:', tabs[0].id);
       
-      // Show feedback that inspection has started
-      showToast('Inspect mode active - click an element to capture');
+      // Show feedback in the popup and stay open
+      showToast('Inspect mode active - click elements on page');
       
-      // Don't close the popup immediately - user might want to read the instructions
-      // The popup will close when Inspect mode captures an element (the content script handles this)
-      // Or user can close manually
+      // Poll for captured elements every second
+      startPollingSessionElements(tabs[0].id);
     }
   } catch (e) {
     console.error('Failed to start inspect:', e);
-    // Try just sending message anyway
-    try {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      await chrome.tabs.sendMessage(tabs[0].id, { type: 'START_INSPECT' });
-    } catch (e2) {
-      console.error('Fallback also failed:', e2);
-      showToast('Failed - check console for errors');
-    }
+    showToast('Failed to start inspect mode');
   }
+}
+
+// Poll for session elements every second when inspecting
+let pollInterval = null;
+function startPollingSessionElements(tabId) {
+  if (pollInterval) clearInterval(pollInterval);
+  
+  pollInterval = setInterval(async () => {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, { type: 'GET_CAPTURED_ELEMENTS' });
+      if (response && response.success && response.elements) {
+        sessionElements = response.elements;
+        updateSessionPanel();
+      }
+    } catch (e) {
+      clearInterval(pollInterval);
+    }
+  }, 1000);
+}
+
+// Update the session panel with captured elements shown directly in popup
+function updateSessionPanel() {
+  const panel = document.getElementById('session-elements-panel');
+  if (!panel) return;
+  
+  if (sessionElements.length === 0) {
+    panel.innerHTML = '<p class="empty-hint">Click "Start Inspecting" then click elements on the page</p>';
+    return;
+  }
+  
+  panel.innerHTML = sessionElements.map((el, i) => `
+    <div class="session-element-card" data-index="${i}">
+      <div class="element-tag">&lt;${el.tagName}&gt;</div>
+      <div class="element-selector">${el.cssSelector}</div>
+      <button class="element-copy-btn" data-selector="${el.cssSelector}" title="Copy selector">📋</button>
+    </div>
+  `).join('');
+  
+  // Add copy button listeners
+  panel.querySelectorAll('.element-copy-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      await navigator.clipboard.writeText(e.target.dataset.selector);
+      showToast('Copied!');
+    });
+  });
+}
+
+// Function to update UI when an element is captured - call this from content script when element is clicked
+async function onElementCaptured(elementInfo) {
+  // Add to session elements
+  sessionElements.push(elementInfo);
+  updateSessionPanel();
+  
+  // Also save to persistent storage
+  await storeElement(elementInfo);
+  await loadElements();
+  renderElements();
 }
 
 async function undoLast() {
@@ -384,32 +437,119 @@ async function getAIDescription() {
   }
 }
 
-// Capture click coordinates
+// Capture flow - Point A to Point B with description
+let flowData = null;
+
 async function captureCoordinates() {
-  showToast('Click anywhere on the page...');
+  showToast('Capture flow started - click first point');
   
   try {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    
+    // First inject content script if needed
+    await chrome.scripting.executeScript({
+      target: { tabId: tabs[0].id },
+      files: ['content.js']
+    });
+    
     const response = await chrome.tabs.sendMessage(tabs[0].id, { 
       type: 'GET_CLICK_COORDINATES'
     });
     
-    if (response && response.success) {
-      const coords = response.coordinates;
-      const info = response.element;
+    if (response && response.success && response.flow) {
+      const flow = response.flow;
+      flowData = flow;
       
-      const coordText = `Position: x:${coords.x}, y:${coords.y}
-Viewport: ${coords.viewportWidth}x${coords.viewportHeight}
-Page: ${coords.pageWidth}x${coords.pageHeight}
-Element: <${info.tagName}> ${info.cssSelector}`;
+      // Generate comprehensive flow description
+      const description = `## Element Flow / Movement
       
-      await navigator.clipboard.writeText(coordText);
-      showToast(`Position captured: ${coords.x}, ${coords.y}`);
+### Point A
+- Position: x:${flow.pointA.coords.x}, y:${flow.pointA.coords.y}
+- Element: <${flow.pointA.element.tagName}> ${flow.pointA.element.cssSelector}
+
+### Point B  
+- Position: x:${flow.pointB.coords.x}, y:${flow.pointB.coords.y}
+- Element: <${flow.pointB.element.tagName}> ${flow.pointB.element.cssSelector}
+
+### Movement
+- Delta: x:${flow.delta.x}px, y:${flow.delta.y}px
+- Distance: ${flow.distance}px
+- Direction: ${flow.direction}
+
+### Page Info
+- URL: ${window.location.href}
+- Viewport: ${flow.pointA.coords.viewportWidth}x${flow.pointA.coords.viewportHeight}`;
+      
+      await navigator.clipboard.writeText(description);
+      
+      // Update flow panel in popup
+      updateFlowPanel(flow);
+      showToast(`Flow captured! Distance: ${flow.distance}px`);
+      
+      // Also show modal
+      showModal('Flow Captured', `
+        <div class="flow-result">
+          <div class="flow-point">Point A: (${flow.pointA.coords.x}, ${flow.pointA.coords.y})</div>
+          <div class="flow-arrow">↓ ${flow.distance}px ${flow.direction}</div>
+          <div class="flow-point">Point B: (${flow.pointB.coords.x}, ${flow.pointB.coords.y})</div>
+          <div class="flow-note">
+            <textarea id="flow-note-input" placeholder="Add note: e.g., 'move menu 200px right', 'element should be here'">${flowData?.note || ''}</textarea>
+            <button id="save-flow-note" class="btn btn-secondary">Save Note</button>
+          </div>
+        </div>
+      `);
+      
+      // Add save note listener
+      document.getElementById('save-flow-note')?.addEventListener('click', async () => {
+        const note = document.getElementById('flow-note-input')?.value;
+        if (note && flowData) {
+          flowData.note = note;
+          await navigator.clipboard.writeText(description + `\n\n### Note\n${note}`);
+          showToast('Flow with note copied!');
+        }
+      });
     }
   } catch (e) {
-    console.error('Failed to capture coordinates:', e);
-    showToast('Failed to capture position');
+    console.error('Failed to capture flow:', e);
+    showToast('Click on the page to capture points');
   }
+}
+
+// Update flow panel in popup
+function updateFlowPanel(flow) {
+  const panel = document.getElementById('flow-panel');
+  if (!panel) return;
+  
+  panel.innerHTML = `
+    <div class="flow-display">
+      <div class="flow-point-a">
+        <span class="point-label">A</span>
+        <span class="point-coords">(${flow.pointA.coords.x}, ${flow.pointA.coords.y})</span>
+        <span class="point-element">&lt;${flow.pointA.element.tagName}&gt;</span>
+      </div>
+      <div class="flow-connection">
+        <span>${flow.distance}px ${flow.direction}</span>
+      </div>
+      <div class="flow-point-b">
+        <span class="point-label">B</span>
+        <span class="point-coords">(${flow.pointB.coords.x}, ${flow.pointB.coords.y})</span>
+        <span class="point-element">&lt;${flow.pointB.element.tagName}&gt;</span>
+      </div>
+      <button class="copy-flow-btn" title="Copy to clipboard">📋 Copy</button>
+    </div>
+  `;
+  
+  panel.querySelector('.copy-flow-btn')?.addEventListener('click', async () => {
+    const note = document.getElementById('flow-note-input')?.value;
+    const flowText = `Point A: (${flow.pointA.coords.x}, ${flow.pointA.coords.y})
+Point B: (${flow.pointB.coords.x}, ${flow.pointB.coords.y})
+Delta: ${flow.delta.x}, ${flow.delta.y}
+Distance: ${flow.distance}px
+Direction: ${flow.direction}
+${note ? '\nNote: ' + note : ''}`;
+    await navigator.clipboard.writeText(flowText);
+    showToast('Copied!');
+  });
 }
 
 // Get viewport info

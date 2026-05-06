@@ -18,9 +18,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Required for async response
   }
   if (message.type === 'GET_AI_DESCRIPTION') {
-    // Get AI description for a previously stored element by index
-    getElements().then(elements => {
-      const el = elements[message.data.index];
+    // Get AI description - request from background
+    chrome.runtime.sendMessage({ type: 'GET_ELEMENTS' }, (elements) => {
+      const el = elements?.[message.data.index];
       if (el) {
         // Try to find element on page
         const found = document.querySelector(el.cssSelector);
@@ -29,40 +29,92 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const aiDesc = generateAIDescription(found, info);
           sendResponse({ success: true, description: aiDesc });
         } else {
-          // Element not found, generate from stored data
-          sendResponse({ 
-            success: true, 
-            description: generateAIDescriptionFromStored(el) 
-          });
+          sendResponse({ success: true, description: generateAIDescriptionFromStored(el) });
         }
       } else {
-        sendResponse({ success: false, error: 'Element not found' });
+        sendResponse({ success: false, error: 'No elements captured yet' });
       }
     });
     return true;
   }
   if (message.type === 'GET_CLICK_COORDINATES') {
-    // Capture coordinates on next click
-    const coordsHandler = (event) => {
-      document.removeEventListener('click', coordsHandler, true);
-      document.removeEventListener('keydown', escapeHandler, true);
-      sendResponse({ 
-        success: true, 
-        coordinates: getClickCoordinates(event),
-        element: extractElementInfo(event.target)
-      });
+    // Enter coordinate capture mode for Point A and Point B
+    isCapturingCoords = true;
+    captureMode = 'pointA'; // Start with point A
+    startInspectMode(); // Use inspect mode visuals
+    
+    const coordHandler = (event) => {
+      if (!isCapturingCoords) return;
+      event.preventDefault();
+      event.stopPropagation();
+      
+      const coords = getClickCoordinates(event);
+      const target = event.target;
+      const elementInfo = extractElementInfo(target);
+      
+      if (captureMode === 'pointA') {
+        // Store Point A
+        window.__inspectorPointA = { coords, element: elementInfo, timestamp: Date.now() };
+        isCapturingCoords = true;
+        captureMode = 'pointB';
+        
+        showNotification(`Point A captured (${coords.x}, ${coords.y}) - Click for Point B or wait 2s...`);
+        
+        // Auto-capture point B after short delay if user doesn't click
+        window.__pointBTimer = setTimeout(() => {
+          if (captureMode === 'pointB' && window.__inspectorPointA) {
+            showNotification('Now click Point B or press Escape to cancel');
+          }
+        }, 2000);
+        
+      } else if (captureMode === 'pointB') {
+        // Store Point B
+        clearTimeout(window.__pointBTimer);
+        window.__inspectorPointB = { coords, element: elementInfo, timestamp: Date.now() };
+        
+        // Calculate flow/distance
+        const dx = coords.x - window.__inspectorPointA.coords.x;
+        const dy = coords.y - window.__inspectorPointA.coords.y;
+        const distance = Math.sqrt(dx*dx + dy*dy);
+        
+        // Stop capture mode
+        isCapturingCoords = false;
+        captureMode = null;
+        stopInspectMode();
+        
+        const flowInfo = {
+          pointA: window.__inspectorPointA,
+          pointB: window.__inspectorPointB,
+          delta: { x: dx, y: dy },
+          distance: Math.round(distance),
+          direction: getDirectionName(dx, dy)
+        };
+        
+        sendResponse({ success: true, flow: flowInfo });
+        showNotification(`Flow captured! Distance: ${Math.round(distance)}px`);
+        
+        // Clear stored points after delay
+        setTimeout(() => {
+          window.__inspectorPointA = null;
+          window.__inspectorPointB = null;
+        }, 30000);
+      }
     };
     
-    const escapeHandler = (event) => {
+    const escapeCoordHandler = (event) => {
       if (event.key === 'Escape') {
-        document.removeEventListener('click', coordsHandler, true);
-        document.removeEventListener('keydown', escapeHandler, true);
+        clearTimeout(window.__pointBTimer);
+        document.removeEventListener('click', coordHandler, true);
+        document.removeEventListener('keydown', escapeCoordHandler, true);
+        isCapturingCoords = false;
+        captureMode = null;
+        stopInspectMode();
         sendResponse({ success: false, cancelled: true });
       }
     };
     
-    document.addEventListener('click', coordsHandler, true);
-    document.addEventListener('keydown', escapeHandler, true);
+    document.addEventListener('click', coordHandler, true);
+    document.addEventListener('keydown', escapeCoordHandler, true);
     return true;
   }
   if (message.type === 'GET_VIEWPORT_INFO') {
@@ -74,7 +126,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.type === 'ANALYZE_STACKING') {
-    // Analyze stacking for a specific element
     const found = document.querySelector(message.data.selector);
     if (found) {
       const stacking = analyzeStackingContext(found);
@@ -84,7 +135,43 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     return true;
   }
+  if (message.type === 'GET_CAPTURED_ELEMENTS') {
+    // Get all elements captured so far in this session
+    sendResponse({ 
+      success: true, 
+      elements: capturedElements,
+      count: capturedElements.length 
+    });
+    return true;
+  }
+  if (message.type === 'STORE_ELEMENT_REALTIME') {
+    // Store element in real-time during inspect
+    const el = message.data.element;
+    capturedElements.push(el);
+    sendResponse({ success: true, index: capturedElements.length - 1 });
+    return true;
+  }
 });
+
+// Direction helper
+function getDirectionName(dx, dy) {
+  const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+  if (angle > -22.5 && angle <= 22.5) return 'right';
+  if (angle > 22.5 && angle <= 67.5) return 'down-right';
+  if (angle > 67.5 && angle <= 112.5) return 'down';
+  if (angle > 112.5 && angle <= 157.5) return 'down-left';
+  if (angle > 157.5 || angle <= -157.5) return 'left';
+  if (angle > -157.5 && angle <= -112.5) return 'up-left';
+  if (angle > -112.5 && angle <= -67.5) return 'up';
+  if (angle > -67.5 && angle <= -22.5) return 'up-right';
+  return 'unknown';
+}
+
+// Session storage for elements captured in current page session
+let capturedElements = [];
+
+let isCapturingCoords = false;
+let captureMode = null;
 
 // Helper function to generate AI description from stored data
 function generateAIDescriptionFromStored(elementInfo) {
@@ -207,27 +294,27 @@ function handleMouseOut(event) {
 }
 
 function handleClick(event) {
-  if (!isInspecting) return;
+  if (!isInspecting && !isCapturingCoords) return;
   event.preventDefault();
   event.stopPropagation();
   
   const target = event.target;
   const elementInfo = extractElementInfo(target);
   
-  // Send to background script - use async to ensure delivery
+  // Add to session elements (for real-time popup UI)
+  capturedElements.push(elementInfo);
+  
+  // Send to background script for persistent storage
   chrome.runtime.sendMessage({
     type: 'STORE_ELEMENT',
     data: elementInfo
   });
   
-  // Stop inspect mode after capture
-  stopInspectMode();
+  // Keep inspect mode active for multiple captures
+  // (don't call stopInspectMode() unless user presses Escape)
   
   // Notify user
-  showNotification(`Element captured: <${target.tagName.toLowerCase()}>`);
-  
-  // Try to refresh the popup's element list as a hint that something was captured
-  // This doesn't close the popup but updates data
+  showNotification(`Element captured: <${target.tagName.toLowerCase()}> (${capturedElements.length} total)`);
 }
 
 function handleKeyDown(event) {

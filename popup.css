@@ -526,3 +526,54 @@ body {
 .toast.fade-out {
   animation: fadeOut 0.3s ease forwards;
 }
+/* Session Panel - shows elements captured this session */
+.session-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-top: 12px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.panel-heading {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.session-element-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.session-element-card .element-tag {
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.session-element-card .element-selector {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Flow Panel */
+.flow-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-top: 12px;
+  padding: 12px;
+}
