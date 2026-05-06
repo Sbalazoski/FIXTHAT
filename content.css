@@ -41,6 +41,45 @@
   animation: fadeOut 0.3s ease forwards;
 }
 
+/* Inspector bar at top of page */
+#element-inspector-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background: linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  z-index: 2147483647;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+#element-inspector-bar .inspector-bar-title {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#element-inspector-bar .inspector-bar-hint {
+  opacity: 0.85;
+  font-size: 13px;
+}
+
+#element-inspector-bar kbd {
+  background: rgba(255, 255, 255, 0.2);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 12px;
+}
+
 @keyframes slideIn {
   from {
     opacity: 0;

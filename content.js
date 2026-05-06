@@ -9,11 +9,111 @@ let currentHoveredElement = null;
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'START_INSPECT') {
     startInspectMode();
+    sendResponse({ success: true });
+    return true; // Required for async response
   }
   if (message.type === 'STOP_INSPECT') {
     stopInspectMode();
+    sendResponse({ success: true });
+    return true; // Required for async response
+  }
+  if (message.type === 'GET_AI_DESCRIPTION') {
+    // Get AI description for a previously stored element by index
+    getElements().then(elements => {
+      const el = elements[message.data.index];
+      if (el) {
+        // Try to find element on page
+        const found = document.querySelector(el.cssSelector);
+        if (found) {
+          const info = extractElementInfo(found);
+          const aiDesc = generateAIDescription(found, info);
+          sendResponse({ success: true, description: aiDesc });
+        } else {
+          // Element not found, generate from stored data
+          sendResponse({ 
+            success: true, 
+            description: generateAIDescriptionFromStored(el) 
+          });
+        }
+      } else {
+        sendResponse({ success: false, error: 'Element not found' });
+      }
+    });
+    return true;
+  }
+  if (message.type === 'GET_CLICK_COORDINATES') {
+    // Capture coordinates on next click
+    const coordsHandler = (event) => {
+      document.removeEventListener('click', coordsHandler, true);
+      document.removeEventListener('keydown', escapeHandler, true);
+      sendResponse({ 
+        success: true, 
+        coordinates: getClickCoordinates(event),
+        element: extractElementInfo(event.target)
+      });
+    };
+    
+    const escapeHandler = (event) => {
+      if (event.key === 'Escape') {
+        document.removeEventListener('click', coordsHandler, true);
+        document.removeEventListener('keydown', escapeHandler, true);
+        sendResponse({ success: false, cancelled: true });
+      }
+    };
+    
+    document.addEventListener('click', coordsHandler, true);
+    document.addEventListener('keydown', escapeHandler, true);
+    return true;
+  }
+  if (message.type === 'GET_VIEWPORT_INFO') {
+    sendResponse({ success: true, info: captureViewportInfo() });
+    return true;
+  }
+  if (message.type === 'GET_PRESETS') {
+    sendResponse({ success: true, presets: LAYOUT_PRESETS });
+    return true;
+  }
+  if (message.type === 'ANALYZE_STACKING') {
+    // Analyze stacking for a specific element
+    const found = document.querySelector(message.data.selector);
+    if (found) {
+      const stacking = analyzeStackingContext(found);
+      sendResponse({ success: true, stacking });
+    } else {
+      sendResponse({ success: false, error: 'Element not found' });
+    }
+    return true;
   }
 });
+
+// Helper function to generate AI description from stored data
+function generateAIDescriptionFromStored(elementInfo) {
+  const parts = [];
+  parts.push(`## Element Location`);
+  parts.push(`CSS Selector: ${elementInfo.cssSelector}`);
+  parts.push(`XPath: ${elementInfo.xpath}`);
+  parts.push(`\n## Element Details`);
+  parts.push(`Tag: <${elementInfo.tagName}>`);
+  if (elementInfo.idAttr) parts.push(`ID: ${elementInfo.idAttr}`);
+  if (elementInfo.classes && elementInfo.classes.length > 0) {
+    parts.push(`Classes: ${elementInfo.classes.map(c => '.' + c).join(' ')}`);
+  }
+  if (elementInfo.attributes && Object.keys(elementInfo.attributes).length > 0) {
+    parts.push(`\n## Key Attributes`);
+    Object.entries(elementInfo.attributes).forEach(([key, val]) => {
+      parts.push(`${key}="${val}"`);
+    });
+  }
+  if (elementInfo.computedStyles) {
+    parts.push(`\n## Styles`);
+    Object.entries(elementInfo.computedStyles).forEach(([key, val]) => {
+      parts.push(`${key}: ${val}`);
+    });
+  }
+  parts.push(`\n## Suggested Fix (for AI agent)`);
+  parts.push(`[Describe what you want to change here]`);
+  return parts.join('\n');
+}
 
 function startInspectMode() {
   if (isInspecting) return;
@@ -25,6 +125,16 @@ function startInspectMode() {
   highlightOverlay = document.createElement('div');
   highlightOverlay.id = 'element-inspector-overlay';
   document.body.appendChild(highlightOverlay);
+  
+  // Create visual inspector bar at top of page
+  const inspectorBar = document.createElement('div');
+  inspectorBar.id = 'element-inspector-bar';
+  inspectorBar.innerHTML = `
+    <span class="inspector-bar-title">◎ Element Inspector Active</span>
+    <span class="inspector-bar-hint">Click any element to capture it</span>
+    <span class="inspector-bar-hint">Press <kbd>Esc</kbd> to cancel</span>
+  `;
+  document.body.appendChild(inspectorBar);
   
   // Add event listeners
   document.addEventListener('mouseover', handleMouseOver, true);
@@ -46,6 +156,12 @@ function stopInspectMode() {
   if (highlightOverlay) {
     highlightOverlay.remove();
     highlightOverlay = null;
+  }
+  
+  // Remove inspector bar
+  const inspectorBar = document.getElementById('element-inspector-bar');
+  if (inspectorBar) {
+    inspectorBar.remove();
   }
   
   // Remove highlight from current element
@@ -98,17 +214,20 @@ function handleClick(event) {
   const target = event.target;
   const elementInfo = extractElementInfo(target);
   
-  // Send to background script
+  // Send to background script - use async to ensure delivery
   chrome.runtime.sendMessage({
     type: 'STORE_ELEMENT',
     data: elementInfo
   });
   
-  // Stop inspect mode after捕获
+  // Stop inspect mode after capture
   stopInspectMode();
   
   // Notify user
   showNotification(`Element captured: <${target.tagName.toLowerCase()}>`);
+  
+  // Try to refresh the popup's element list as a hint that something was captured
+  // This doesn't close the popup but updates data
 }
 
 function handleKeyDown(event) {
@@ -292,4 +411,211 @@ function showNotification(message) {
     notification.classList.add('fade-out');
     setTimeout(() => notification.remove(), 300);
   }, 2000);
+}
+
+// ============ NEW DEVELOPER FEATURES ============
+
+// Stacking Context Analysis - finds all elements that might be stacking issues
+function analyzeStackingContext(element) {
+  const info = {
+    zIndex: null,
+    position: null,
+    hasStackingIssue: false,
+    blockingElements: []
+  };
+  
+  try {
+    const computed = window.getComputedStyle(element);
+    info.position = computed.position;
+    info.zIndex = computed.zIndex;
+    info.opacity = computed.opacity;
+    info.overflow = computed.overflow;
+    
+    // Check for stacking context issues
+    if (info.position !== 'static' || info.zIndex !== 'auto' || info.opacity < 1 || info.overflow === 'hidden') {
+      info.hasStackingIssue = true;
+    }
+    
+    // Find potential blocking elements (positioned elements in the same container)
+    const parent = element.parentElement;
+    if (parent) {
+      const siblings = parent.children;
+      for (const sib of siblings) {
+        if (sib === element) continue;
+        const sibStyle = window.getComputedStyle(sib);
+        if (sibStyle.position !== 'static' || sibStyle.zIndex !== 'auto') {
+          info.blockingElements.push({
+            tagName: sib.tagName.toLowerCase(),
+            id: sib.id || null,
+            classes: Array.from(sib.classList).slice(0, 3),
+            position: sibStyle.position,
+            zIndex: sibStyle.zIndex
+          });
+        }
+      }
+    }
+  } catch (e) {
+    // Accessibility restricted
+  }
+  
+  return info;
+}
+
+// Generate AI Agent Description - prompt-ready text
+function generateAIDescription(element, elementInfo) {
+  const parts = [];
+  
+  // Location
+  parts.push(`## Element Location`);
+  parts.push(`Page: ${window.location.href}`);
+  parts.push(`CSS Selector: ${elementInfo.cssSelector}`);
+  parts.push(`XPath: ${elementInfo.xpath}`);
+  
+  // Element details
+  parts.push(`\n## Element Details`);
+  parts.push(`Tag: <${elementInfo.tagName}>`);
+  if (elementInfo.idAttr) {
+    parts.push(`ID: ${elementInfo.idAttr}`);
+  }
+  if (elementInfo.classes && elementInfo.classes.length > 0) {
+    parts.push(`Classes: ${elementInfo.classes.map(c => '.' + c).join(' ')}`);
+  }
+  
+  // Key attributes
+  if (elementInfo.attributes && Object.keys(elementInfo.attributes).length > 0) {
+    parts.push(`\n## Key Attributes`);
+    Object.entries(elementInfo.attributes).forEach(([key, val]) => {
+      parts.push(`${key}="${val}"`);
+    });
+  }
+  
+  // Dimensions & position
+  const rect = element.getBoundingClientRect();
+  parts.push(`\n## Layout`);
+  parts.push(`Dimensions: ${Math.round(rect.width)}px × ${Math.round(rect.height)}px`);
+  parts.push(`Position (viewport): x:${Math.round(rect.x)}, y:${Math.round(rect.y)}`);
+  parts.push(`Margin: ${getComputedStyle(element).margin}`);
+  
+  // Stacking info
+  const stacking = analyzeStackingContext(element);
+  if (stacking.hasStackingIssue) {
+    parts.push(`\n## Stacking Context`);
+    parts.push(`Position: ${stacking.position}`);
+    parts.push(`Z-index: ${stacking.zIndex}`);
+    parts.push(`Opacity: ${stacking.opacity}`);
+    parts.push(`Overflow: ${stacking.overflow}`);
+  }
+  
+  // Text content
+  if (elementInfo.textContent) {
+    parts.push(`\n## Text Content`);
+    parts.push(`"${elementInfo.textContent}"`);
+  }
+  
+  // For beginners: what to tell an agent
+  parts.push(`\n## Suggested Fix (for AI agent)`);
+  parts.push(`[Describe what you want to change here]`);
+  
+  return parts.join('\n');
+}
+
+// Get element click coordinates (mapping system)
+function getClickCoordinates(event) {
+  return {
+    x: event.clientX,
+    y: event.clientY,
+    pageX: event.pageX,
+    pageY: event.pageY,
+    screenX: event.screenX,
+    screenY: event.screenY,
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+    pageWidth: document.documentElement.scrollWidth,
+    pageHeight: document.documentElement.scrollHeight
+  };
+}
+
+// Industry Standard Layout Presets
+const LAYOUT_PRESETS = {
+  button: {
+    height: '40px (mobile: 36px)',
+    minWidth: '120px',
+    padding: '12px 24px',
+    borderRadius: '6px (primary), 4px (secondary)',
+    fontSize: '14px (16px for emphasis)',
+    fontWeight: '500-600'
+  },
+  input: {
+    height: '40px',
+    padding: '8px 12px',
+    borderRadius: '6px',
+    fontSize: '14px',
+    border: '1px solid #d1d5db'
+  },
+  card: {
+    padding: '16px or 24px',
+    borderRadius: '8px',
+    shadow: '0 1px 3px rgba(0,0,0,0.1)',
+    maxWidth: '360px (common)'
+  },
+  modal: {
+    width: '90% max 500px',
+    padding: '24px',
+    borderRadius: '12px',
+    overlay: 'rgba(0,0,0,0.5)'
+  },
+  navbar: {
+    height: '60px (desktop), 56px (mobile)',
+    padding: '0 16px or 24px'
+  },
+  spacing: {
+    xs: '4px',
+    sm: '8px',
+    md: '16px',
+    lg: '24px',
+    xl: '32px',
+    xxl: '48px'
+  },
+  breakpoints: {
+    mobile: '320px - 480px',
+    tablet: '481px - 768px',
+    desktop: '769px - 1024px',
+    wide: '1025px+'
+  },
+  typography: {
+    h1: '32px / 40px line-height',
+    h2: '28px / 36px',
+    h3: '24px / 32px',
+    h4: '20px / 28px',
+    body: '16px / 24px',
+    small: '14px / 20px',
+    caption: '12px / 16px'
+  }
+};
+
+// Capture complete responsive info
+function captureViewportInfo() {
+  return {
+    viewport: {
+      width: window.innerWidth,
+      height: window.innerHeight
+    },
+    document: {
+      width: document.documentElement.scrollWidth,
+      height: document.documentElement.scrollHeight
+    },
+    devicePixelRatio: window.devicePixelRatio,
+    colorScheme: window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+    reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    breakpoints: {
+      isMobile: window.innerWidth < 481,
+      isTablet: window.innerWidth >= 481 && window.innerWidth < 769,
+      isDesktop: window.innerWidth >= 769 && window.innerWidth < 1025,
+      isWide: window.innerWidth >= 1025
+    },
+    scrollPosition: {
+      x: window.scrollX,
+      y: window.scrollY
+    }
+  };
 }
