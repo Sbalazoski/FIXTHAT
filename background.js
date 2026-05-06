@@ -22,42 +22,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     storeElement(message.data).then(() => {
       sendResponse({ success: true });
     });
-    return true;
+    return true; // Required for async response
   }
   
   if (message.type === 'GET_ELEMENTS') {
     getElements().then(elements => {
       sendResponse({ elements });
     });
-    return true;
+    return true; // Required for async response
   }
   
   if (message.type === 'UPDATE_NOTES') {
     updateNotes(message.data.id, message.data.notes).then(() => {
       sendResponse({ success: true });
     });
-    return true;
+    return true; // Required for async response
   }
   
   if (message.type === 'DELETE_ELEMENT') {
     deleteElement(message.data.id).then(() => {
       sendResponse({ success: true });
     });
-    return true;
+    return true; // Required for async response
   }
   
   if (message.type === 'CLEAR_ALL') {
     clearAllElements().then(() => {
       sendResponse({ success: true });
     });
-    return true;
+    return true; // Required for async response
   }
   
   if (message.type === 'UNDO_LAST') {
     undoLastElement().then(() => {
       sendResponse({ success: true });
     });
-    return true;
+    return true; // Required for async response
   }
   
   if (message.type === 'UPDATE_BADGE') {
